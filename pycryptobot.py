@@ -31,6 +31,11 @@ import argparse, json, logging, math, os, re, sched, sys, time
 from models.Trading import TechnicalAnalysis
 from models.TradingAccount import TradingAccount
 from models.CoinbasePro import AuthAPI, PublicAPI
+from views.TradingGraphs import TradingGraphs
+
+# reduce informational logging
+logging.getLogger("requests").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 # instantiate the arguments parser
 parser = argparse.ArgumentParser(description='Python Crypto Bot using the Coinbase Pro API')
@@ -39,6 +44,7 @@ parser = argparse.ArgumentParser(description='Python Crypto Bot using the Coinba
 parser.add_argument('--granularity', type=int, help='Optionally provide granularity via arguments')
 parser.add_argument('--live', type=int, help='Optionally provide live status via arguments')
 parser.add_argument('--market', type=str, help='Optionally provide market via arguments')
+parser.add_argument('--graphs', type=int, help='Optionally save graphs to graphs directory')
 parser.add_argument('--sim', type=str, help='Optionally provide simulation status via arguments ("fast", "slow")')
 parser.add_argument('--verbose', type=int, help='Optionally provide verbose status via arguments')
 
@@ -46,6 +52,9 @@ parser.add_argument('--verbose', type=int, help='Optionally provide verbose stat
 args = parser.parse_args()
 
 """Settings"""
+
+# do not change
+dev_mode = 0
 
 if args.live == None:
     # default live status
@@ -59,6 +68,19 @@ else:
         is_live = 1
     else:
         is_live = 0
+
+if args.graphs == None:
+    # default save graph option
+
+    # 0 do not save, 1 save
+    save_graphs = 0
+else:
+    # graphs status set via --graphs argument
+
+    if args.graphs == 1:
+        save_graphs = 1
+    else:
+        save_graphs = 0
 
 if args.sim == None:
     # default simulation status
@@ -130,6 +152,14 @@ else:
     else:
         is_verbose = 0
 
+if dev_mode == 1:
+    market = 'BTC-GBP'
+    granularity = 3600
+    is_live = 0
+    is_sim = 1
+    sim_speed = 'fast'
+    is_verbose = 0
+
 """Highly advisable not to change any code below this point!"""
 
 # validation of crypto market inputs
@@ -146,6 +176,7 @@ market = cryptoMarket + '-' + fiatMarket
 # initial state is to wait
 action = 'WAIT'
 last_action = ''
+last_buy = 0
 last_df_index = ''
 iterations = 0
 x_since_buy = 0
@@ -163,8 +194,16 @@ if is_live == 1:
     account = TradingAccount(config)
 
     # if the bot is restarted between a buy and sell it will sell first
-    if (account.getBalance(fiatMarket) == 0 and account.getBalance(cryptoMarket) > 0):
+    if (market.startswith('BTC-') and account.getBalance(cryptoMarket) > 0.001):
         last_action = 'BUY'
+    elif (market.startswith('BCH-') and account.getBalance(cryptoMarket) > 0.01):
+        last_action = 'BUY'
+    elif (market.startswith('ETH-') and account.getBalance(cryptoMarket) > 0.01):
+        last_action = 'BUY'
+    elif (market.startswith('LTC-') and account.getBalance(cryptoMarket) > 0.1):
+        last_action = 'BUY'
+    elif (account.getBalance(fiatMarket) > 30):
+        last_action = 'SELL'
 
 def truncate(f, n):
     return math.floor(f * 10 ** n) / 10 ** n
@@ -188,7 +227,7 @@ def compare(val1, val2, label=''):
 
 def executeJob(sc, market, granularity, tradingData=pd.DataFrame()):
     """Trading bot job which runs at a scheduled interval"""
-    global action, iterations, x_since_buy, x_since_sell, last_action, last_df_index
+    global action, iterations, last_action, last_buy, last_df_index, x_since_buy, x_since_sell
 
     # increment iterations
     iterations = iterations + 1
@@ -217,6 +256,7 @@ def executeJob(sc, market, granularity, tradingData=pd.DataFrame()):
         # df_last contains the most recent entry
         df_last = df.tail(1)
  
+    price = float(df_last['close'].values[0])
     ema12gtema26 = bool(df_last['ema12gtema26'].values[0])
     ema12gtema26co = bool(df_last['ema12gtema26co'].values[0])
     macdgtsignal = bool(df_last['macdgtsignal'].values[0])
@@ -228,11 +268,26 @@ def executeJob(sc, market, granularity, tradingData=pd.DataFrame()):
     obv = float(df_last['obv'].values[0])
     obv_pc = float(df_last['obv_pc'].values[0])
 
+    # candlestick detection
+    hammer = bool(df_last['hammer'].values[0])
+    inverted_hammer = bool(df_last['inverted_hammer'].values[0])
+    hanging_man = bool(df_last['hanging_man'].values[0])
+    shooting_star = bool(df_last['shooting_star'].values[0])
+    three_white_soldiers = bool(df_last['three_white_soldiers'].values[0])
+    three_black_crows = bool(df_last['three_black_crows'].values[0])
+    morning_star = bool(df_last['morning_star'].values[0])
+    evening_star = bool(df_last['evening_star'].values[0])
+    three_line_strike = bool(df_last['three_line_strike'].values[0])
+    abandoned_baby = bool(df_last['abandoned_baby'].values[0])
+    morning_star_doji = bool(df_last['morning_star_doji'].values[0])
+    evening_star_doji = bool(df_last['evening_star_doji'].values[0])
+    two_black_gapping = bool(df_last['two_black_gapping'].values[0])
+
     # criteria for a buy signal
-    if ((ema12gtema26co == True and macdgtsignal == True and obv_pc > 0.1) or (ema12gtema26 == True and macdgtsignal == True and obv_pc > 0.1 and x_since_buy > 0 and x_since_buy <= 2)) and last_action != 'BUY':
+    if ((ema12gtema26co == True and macdgtsignal == True and obv_pc > 0.1) or (ema12gtema26 == True and macdgtsignal == True and x_since_buy > 0 and x_since_buy <= 2)) and last_action != 'BUY':
         action = 'BUY'
     # criteria for a sell signal
-    elif (ema12ltema26co == True and macdltsignal == True) and last_action not in ['','SELL']:
+    elif ((ema12ltema26co == True and macdltsignal == True) or (ema12ltema26 == True and macdltsignal == True and x_since_sell > 0 and x_since_sell <= 2)) and last_action not in ['','SELL']:
         action = 'SELL'
     # anything other than a buy or sell, just wait
     else:
@@ -244,29 +299,133 @@ def executeJob(sc, market, granularity, tradingData=pd.DataFrame()):
         price_text = 'Price: ' + str(truncate(float(df_last['close'].values[0]), 2))
         ema_text = compare(df_last['ema12'].values[0], df_last['ema26'].values[0], 'EMA12/26')
         macd_text = compare(df_last['macd'].values[0], df_last['signal'].values[0], 'MACD')
-        obv_text = compare(df_last['obv_pc'].values[0], 0, 'OBV %')
+        obv_text = compare(df_last['obv_pc'].values[0], 0.1, 'OBV %')
         counter_text = '[I:' + str(iterations) + ',B:' + str(x_since_buy) + ',S:' + str(x_since_sell) + ']'
+
+        if hammer == True:
+            log_text = '* Candlestick Detected: Hammer ("Weak - Reversal - Up")'
+            print (log_text, "\n")
+            logging.debug(log_text)
+
+        if shooting_star == True:
+            log_text = '* Candlestick Detected: Shooting Star ("Weak - Reversal - Down")'
+            print (log_text, "\n")
+            logging.debug(log_text)
+
+        if hanging_man == True:
+            log_text = '* Candlestick Detected: Hanging Man ("Weak - Continuation - Up")'
+            print (log_text, "\n")
+            logging.debug(log_text)
+
+        if inverted_hammer == True:
+            log_text = '* Candlestick Detected: Inverted Hammer ("Weak - Continuation - Down")'
+            print (log_text, "\n")
+            logging.debug(log_text)
  
+        if three_white_soldiers == True:
+            log_text = '*** Candlestick Detected: Three White Soldiers ("Strong - Reversal - Up")'
+            print (log_text, "\n")
+            logging.debug(log_text)
+
+        if three_black_crows == True:
+            log_text = '*** Candlestick Detected: Three Black Crows ("Strong - Reversal - Down")'
+            print (log_text, "\n")
+            logging.debug(log_text)
+
+        if morning_star == True:
+            log_text = '*** Candlestick Detected: Morning Star ("Strong - Reversal - Up")'
+            print (log_text, "\n")
+            logging.debug(log_text)
+
+        if evening_star == True:
+            log_text = '*** Candlestick Detected: Evening Star ("Strong - Reversal - Down")'
+            print (log_text, "\n")
+            logging.debug(log_text)
+
+        if three_line_strike == True:
+            log_text = '** Candlestick Detected: Three Line Strike ("Reliable - Reversal")'
+            print (log_text, "\n")
+            logging.debug(log_text)
+
+        if abandoned_baby == True:
+            log_text = '** Candlestick Detected: Abandoned Baby ("Reliable - Reversal")'
+            print (log_text, "\n")
+            logging.debug(log_text)
+
+        if morning_star_doji == True:
+            log_text = '** Candlestick Detected: Morning Star Doji ("Reliable - Reversal - Up")'
+            print (log_text, "\n")
+            logging.debug(log_text)
+
+        if evening_star_doji == True:
+            log_text = '** Candlestick Detected: Evening Star Doji ("Reliable - Reversal - Down")'
+            print (log_text, "\n")
+            logging.debug(log_text)
+
+        if two_black_gapping == True:
+            log_text = '*** Candlestick Detected: Two Black Gapping ("Reliable - Reversal - Down")'
+            print (log_text, "\n")
+            logging.debug(log_text)
+
         ema_co_prefix = ''
-        ema_co_suffix = ''
-        if ema12gtema26co == True or ema12ltema26co == True:
-            ema_co_prefix = '* '
-            ema_co_suffix = ' *'
+        ema_co_suffix = ''   
+        if ema12gtema26 == True:
+            ema_co_prefix = '^ '
+            ema_co_suffix = ' ^'
+        elif ema12ltema26 == True:
+            ema_co_prefix = 'v '
+            ema_co_suffix = ' v'
+        elif ema12gtema26co == True:
+            ema_co_prefix = '*^ '
+            ema_co_suffix = ' ^*'
+        elif ema12ltema26co == True:
+            ema_co_prefix = '*v '
+            ema_co_suffix = ' v*'
 
         macd_co_prefix = ''
         macd_co_suffix = ''
-        if macdgtsignalco == True or macdltsignalco == True:
-            macd_co_prefix = '* '
-            macd_co_suffix = ' *'
+        if macdgtsignal == True:
+            macd_co_prefix = '^ '
+            macd_co_suffix = ' ^'
+        elif macdltsignal == True:
+            macd_co_prefix = 'v '
+            macd_co_suffix = ' v'
+        elif macdgtsignalco == True:
+            macd_co_prefix = '*^ '
+            macd_co_suffix = ' ^*'
+        elif macdltsignalco == True:
+            macd_co_prefix = '*v '
+            macd_co_suffix = ' v*'
+
+        obv_prefix = ''
+        obv_suffix = ''
+        if (obv_pc > 0.1):
+            obv_prefix = '^ '
+            obv_suffix = ' ^'
+        else:
+            obv_prefix = 'v '
+            obv_suffix = ' v'           
 
         if is_verbose == 0:
-            output_text = ts_text + ' | ' + price_text + ' | ' + ema_co_prefix + ema_text + ema_co_suffix + ' | ' + macd_co_prefix + macd_text + macd_co_suffix + ' | ' + obv_text + ' | ' + action + ' ' + counter_text
+            if last_action == '':
+                output_text = ts_text + ' | ' + price_text + ' | ' + ema_co_prefix + ema_text + ema_co_suffix + ' | ' + macd_co_prefix + macd_text + macd_co_suffix + ' | ' + obv_prefix + obv_text + obv_suffix + ' | ' + action + ' ' + counter_text + ' | Last Action: ' + last_action
+            else:
+                output_text = ts_text + ' | ' + price_text + ' | ' + ema_co_prefix + ema_text + ema_co_suffix + ' | ' + macd_co_prefix + macd_text + macd_co_suffix + ' | ' + obv_prefix + obv_text + obv_suffix + ' | ' + action + ' ' + counter_text
+
+            if last_action == 'BUY':
+                margin = str(truncate((((price - last_buy) / price) * 100), 2)) + '%'
+                output_text += ' | ' +  margin
+
             logging.debug(output_text)
             print (output_text)
         else:
             logging.debug('-- Iteration: ' + str(iterations) + ' --')
             logging.debug('-- Since Last Buy: ' + str(x_since_buy) + ' --')
             logging.debug('-- Since Last Sell: ' + str(x_since_sell) + ' --')
+
+            if last_action == 'BUY':
+                margin = str(truncate((((price - last_buy) / price) * 100), 2)) + '%'
+                logging.debug('-- Margin: ' + margin + '% --')            
             
             logging.debug('price: ' + str(truncate(float(df_last['close'].values[0]), 2)))
             logging.debug('ema12: ' + str(truncate(float(df_last['ema12'].values[0]), 2)))
@@ -360,25 +519,30 @@ def executeJob(sc, market, granularity, tradingData=pd.DataFrame()):
             txt = '           Action : ' + action
             print('|', txt, (' ' * (75 - len(txt))), '|')
             print('================================================================================')
+            if last_action == 'BUY':
+                txt = '           Margin : ' + margin + '%'
+                print('|', txt, (' ' * (75 - len(txt))), '|')
+                print('================================================================================')
 
-        if last_action == 'BUY':
+        # increment x since buy
+        if (ema12gtema26co == True and macdgtsignal == True):
             x_since_buy = x_since_buy + 1
-        elif last_action == 'SELL':
+        # increment x since sell
+        elif (ema12ltema26co == True and macdltsignal == True):
             x_since_sell = x_since_sell + 1
 
         # if a buy signal
         if action == 'BUY':
-            # increment x since buy
-            x_since_buy = x_since_buy + 1
-
             # reset x since sell
             x_since_sell = 0
+
+            last_buy = price
 
             # if live
             if is_live == 1:
                 if is_verbose == 0:
                     logging.info(ts_text + ' | ' + market + ' ' + str(granularity) + ' | ' + price_text + ' | BUY')
-                    print (ts_text, '|', market, granularity, '|', price_text, '| BUY')                    
+                    print ("\n", ts_text, '|', market, granularity, '|', price_text, '| BUY', "\n")                    
                 else:
                     print('--------------------------------------------------------------------------------')
                     print('|                      *** Executing LIVE Buy Order ***                        |')
@@ -393,18 +557,21 @@ def executeJob(sc, market, granularity, tradingData=pd.DataFrame()):
             else:
                 if is_verbose == 0:
                     logging.info(ts_text + ' | ' + market + ' ' + str(granularity) + ' | ' + price_text + ' | BUY')
-                    print (ts_text, '|', market, granularity, '|', price_text, '| BUY')                    
+                    print ("\n", ts_text, '|', market, granularity, '|', price_text, '| BUY', "\n")                    
                 else:
                     print('--------------------------------------------------------------------------------')
                     print('|                      *** Executing TEST Buy Order ***                        |')
                     print('--------------------------------------------------------------------------------')
             #print(df_last[['close','ema12','ema26','ema12gtema26','ema12gtema26co','macd','signal','macdgtsignal','obv','obv_pc']])
 
+            if save_graphs == 1:
+                tradinggraphs = TradingGraphs(technicalAnalysis)
+                ts = datetime.now().timestamp()
+                filename = 'BTC-GBP_3600_buy_' + str(ts) + '.png'
+                tradinggraphs.renderEMAandMACD(24, 'graphs/' + filename, True)
+
         # if a sell signal
         elif action == 'SELL':
-            # increment x since buy
-            x_since_sell = x_since_sell + 1
-
             # reset x since buy
             x_since_buy = 0
 
@@ -412,7 +579,7 @@ def executeJob(sc, market, granularity, tradingData=pd.DataFrame()):
             if is_live == 1:
                 if is_verbose == 0:
                     logging.info(ts_text + ' | ' + market + ' ' + str(granularity) + ' | ' + price_text + ' | SELL')
-                    print (ts_text, '|', market, granularity, '|', price_text, '| SELL')                    
+                    print ("\n", ts_text, '|', market, granularity, '|', price_text, '| SELL', "\n")                    
                 else:
                     print('--------------------------------------------------------------------------------')
                     print('|                      *** Executing LIVE Sell Order ***                        |')
@@ -427,18 +594,27 @@ def executeJob(sc, market, granularity, tradingData=pd.DataFrame()):
             else:
                 if is_verbose == 0:
                     logging.info(ts_text + ' | ' + market + ' ' + str(granularity) + ' | ' + price_text + ' | SELL')
-                    print (ts_text, '|', market, granularity, '|', price_text, '| SELL')                    
+                    print ("\n", ts_text, '|', market, granularity, '|', price_text, '| SELL', "\n")                    
                 else:
                     print('--------------------------------------------------------------------------------')
                     print('|                      *** Executing TEST Sell Order ***                        |')
                     print('--------------------------------------------------------------------------------')
             #print(df_last[['close','ema12','ema26','ema12ltema26','ema12ltema26co','macd','signal','macdltsignal','obv','obv_pc']])
 
+            if save_graphs == 1:
+                tradinggraphs = TradingGraphs(technicalAnalysis)
+                ts = datetime.now().timestamp()
+                filename = 'BTC-GBP_3600_buy_' + str(ts) + '.png'
+                tradinggraphs.renderEMAandMACD(24, 'graphs/' + filename, True)
+
         # last significant action
         if action in ['BUY','SELL']:
             last_action = action
         
         last_df_index = df_last.index.format()
+    else:
+        # decrement igored iteration
+        iterations = iterations - 1
 
     # if live
     if is_live == 1:
@@ -466,7 +642,7 @@ try:
     print('--------------------------------------------------------------------------------')   
     txt = '           Market : ' + market
     print('|', txt, (' ' * (75 - len(txt))), '|')
-    txt = '      Granularity : ' + str(granularity) + ' minutes'
+    txt = '      Granularity : ' + str(granularity) + ' seconds'
     print('|', txt, (' ' * (75 - len(txt))), '|')
     print('--------------------------------------------------------------------------------')
 
